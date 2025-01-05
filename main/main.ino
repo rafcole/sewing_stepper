@@ -1,7 +1,7 @@
 #include <AccelStepper.h>
  
-#define dirPin 3
-#define stepPin 4
+#define dirPin 4
+#define stepPin 3
 #define motorInterfaceType AccelStepper::DRIVER
 
 // Define a stepper and the pins it will use
@@ -11,7 +11,7 @@ void setup()
 {  
   // Change these to suit your stepper if you want
   stepper.setMaxSpeed(30000);
-  stepper.setAcceleration(10000);
+  stepper.setAcceleration(2000);
   stepper.moveTo(30000);
 }
  
