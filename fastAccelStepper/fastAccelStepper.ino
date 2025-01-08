@@ -25,7 +25,7 @@ void setup() {
 
       stepper->setSpeedInHz(20000);       // 500 steps/s
       stepper->setAcceleration(17000);    // 100 steps/s²
-      // stepper->move(100000);
+      stepper->move(100000);
    }
 
 }
