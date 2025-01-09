@@ -11,22 +11,23 @@ int pedalPin = A0;
 unsigned int pedalPinMin = 700;
 unsigned int pedalPinMax = 1010;
 
-unsigned int minSpeedInHz = 1700;
-unsigned int maxSpeedInHz = 50000;
+unsigned int minSpeedInHz = 5000; // 1700 good
+unsigned int maxSpeedInHz = 49000;
 
 // not accessible in setup?
-unsigned int absAccelerationRate = 60000;
-unsigned int linAccelRate = 30;
+unsigned int absAccelerationRate = 40000;
+unsigned int linAccelRate = 50;
 
 FastAccelStepperEngine engine = FastAccelStepperEngine();
 FastAccelStepper *stepper = NULL;
 
 void setup() {
   // initialize serial communication at 9600 bits per second:
-  Serial.begin(9600);
+  Serial.begin(115200);
 
   engine.init();
   stepper = engine.stepperConnectToPin(stepPinStepper);
+
   if (stepper) {
     stepper->setDirectionPin(dirPinStepper, false);
     stepper->setEnablePin(enablePinStepper);
@@ -39,18 +40,22 @@ void setup() {
 }
 
 void loop() {
-  int sensorValue = analogRead(pedalPin);
+  int pedalReading = analogRead(pedalPin);
 
-  unsigned int newSpeedInHz = map(sensorValue, pedalPinMax, pedalPinMin, minSpeedInHz, maxSpeedInHz);
+  unsigned int newSpeedInHz = map(pedalReading, pedalPinMax, pedalPinMin, minSpeedInHz, maxSpeedInHz);
 
   if (newSpeedInHz <= minSpeedInHz) {
-    stepper->stopMove();
+    
+    // stepper->forceStop();
+
+    stepper->runForward();
   } else {
     stepper->setSpeedInHz(newSpeedInHz);
     stepper->runForward();
+    Serial.println(newSpeedInHz);
   }
 
-  delay(50);
+  delay(80);
 
-  Serial.println(newSpeedInHz);
+  
 }
