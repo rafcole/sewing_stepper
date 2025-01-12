@@ -1,5 +1,7 @@
 #include "FastAccelStepper.h"
 #include "AVRStepperPins.h" // Only required for AVR controllers
+#include <Encoder.h>
+
 
 // // Mega
 // #define stepPinStepper   6 // must be 6, 7, 8 for MEGA 2560
@@ -13,7 +15,12 @@
 #define stepPinStepper   9
 
 // external io
-int pedalPin = A1;
+#define pedalPin A1
+
+//
+int driverMicroSteps = 3200;
+int stepperSpecsStepsPerRevolution = 200;
+int microStepsPerRevolution = driverMicroSteps/stepperSpecsStepsPerRevolution;
 
 // pedal ranges from 3.5-5v 
 unsigned int pedalPinMin = 350;
@@ -25,25 +32,37 @@ unsigned int homingSpeed = 7000;
 
 // not accessible in setup?
 unsigned int absAccelerationRate = 40000;
-unsigned int linAccelRate = 50;
+unsigned int linAccelRate = 10000;
 
 FastAccelStepperEngine engine = FastAccelStepperEngine();
 FastAccelStepper *stepper = NULL;
 
 // debounce
-int counter = 0;
+int debounceCounterMicros = 0;
 long last_micros = 0;
+
+// encoder
+int encoderPinA = 3;
+int encoderPinB = 2;
+long oldPosition  = -999;
+int encoderPulsesPerRotation = 2400;
+
+Encoder myEnc(encoderPinA, encoderPinB);
 
 // button press logic tester
 // normally closed momentary
-int interuptPin = 3;
+int needleDownSensorPin = 4;
 // volatile bool lastMoveHomed = false;
-volatile bool foundHome = true;
+volatile bool foundHome = false;
 volatile bool firstHomeFound = false;
+volatile bool machineIsHoming = false;
+
 
 long stepsPerRotation = 0;
-bool firstRotationComplete = false;
-
+volatile bool firstRotationComplete = false;
+volatile bool makingFirstRotation = false;
+long firstHomeTimeStamp = 0;
+long secondHomeTimeStamp = 0;
 // add single sensor
 // Track current position in steps 
 // Need global variable 
@@ -79,7 +98,7 @@ bool firstRotationComplete = false;
   
 void setup() {
   // initialize serial communication at 9600 bits per second:
-  Serial.begin(9600);
+  Serial.begin(115200);
 
   engine.init();
   stepper = engine.stepperConnectToPin(stepPinStepper);
@@ -94,78 +113,105 @@ void setup() {
   }
 
   // ISR for external sensors
-  pinMode(3, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(interuptPin), needleDownInterrupt, RISING);
+  pinMode(needleDownSensorPin, INPUT_PULLUP);
+  // attachInterrupt(digitalPinToInterrupt(needleDownSensorPin), needleDownInterrupt, RISING);
+
+  // default value gets erased
+  foundHome = false;
 }
 
 void loop() {
+  // if (stepper->isRunning()) {
+  //   Serial.print("Motor running -> Current position: ");
+  //   Serial.println(stepper->getCurrentPosition());
+  // }
+
   int pedalReading = analogRead(pedalPin);
   // Serial.println(pedalReading);
+  bool atZero = digitalRead(needleDownSensorPin);
 
-  unsigned int newSpeedInHz = map(pedalReading, pedalPinMax, pedalPinMin, minSpeedInHz, maxSpeedInHz);
-  // Serial.println(newSpeedInHz);
+  unsigned int pedalSpeedInHz = map(pedalReading, pedalPinMax, pedalPinMin, minSpeedInHz, maxSpeedInHz);
+  // Serial.println(pedalSpeedInHz);
 
 
 
-  if (!stepsPerRotation){
-    setStepsPerRotation();
+  bool pedalUp = pedalSpeedInHz < minSpeedInHz;
+  bool pedalDown = pedalSpeedInHz >= minSpeedInHz;
+
+  // foundHome = digitalRead(needleDownSensorPin);
+
+  if (pedalUp && stepper->isRunning() && firstRotationComplete) {
+    machineIsHoming = true;
+    Serial.println("Machine is homing set to true");
   }
 
-  // pedal is up
-  // home to needle down and stop
-  if (foundHome && newSpeedInHz <= minSpeedInHz) {
-    stepper->forceStop();
+  if (!stepsPerRotation && atZero){
+    Serial.println("found home");
+    setStepsPerRotation();
     foundHome = false;
+  }
 
-  } else if (newSpeedInHz < minSpeedInHz) {
-    // normal 
-    // TODO 
-    // switch to step counting routine
+  // no homing information
+  // default to stopping
+  if (pedalUp) {
+    if (stepsPerRotation && machineIsHoming) {
+      // TODO
+      // HOMING
+      // set to homing speed
+      int stepsOfRotationCompleted = stepper->getCurrentPosition() % stepsPerRotation;
+      stepper->setCurrentPosition(0);
+      stepper->moveTo(stepsOfRotationCompleted, true);
+      // stepper->forceStop();
 
-    // primative single sensor homing
-    stepper->setSpeedInHz(homingSpeed);
+      Serial.print("Steps of rotation: ");
+      Serial.print(stepsOfRotationCompleted);
+      Serial.println();
+
+      // this presumes that the blocking call of moveTo wins out?
+      machineIsHoming = false;
+
+    } else if (stepper->isRunning() && !stepsPerRotation) {
+      stepper->forceStop();
+      Serial.println("No spr data, forced stop");
+    }
   } else {
+    if (foundHome) {
+      stepper->setCurrentPosition(0);
+      Serial.println("Found home while running continuously");
+    }
+    // Pedal down
     // run as normal
-    stepper->setSpeedInHz(newSpeedInHz);
+    // Serial.println("running as normal");
+    stepper->setSpeedInHz(pedalSpeedInHz);
     stepper->runForward();
   }
-
-  // Serial.print("Steps per rotation: ");
-  // Serial.print(stepsPerRotation);
-  // Serial.print("/n");
-
-  // if (newSpeedInHz <= minSpeedInHz) {
-    
-  //   stepper->forceStop();
-
-  //   // stepper->runForward();
-  // } 
-
-  delay(80);
-
-  
 }
 
 void setStepsPerRotation() {
-  if (firstHomeFound && !firstRotationComplete) {
-    stepper->setCurrentPosition(0);
-  } else if (firstRotationComplete) {
-    stepsPerRotation = stepper->getCurrentPosition();
-    Serial.println("steps per rotation");
-    Serial.print("\t\t");
-    Serial.print(stepsPerRotation);
-    Serial.println("\n");
-  }
+ if (foundHome && firstHomeFound && !firstHomeTimeStamp) {
+  firstHomeTimeStamp = millis();
+  stepper->setCurrentPosition(0);
+ } else if (foundHome && firstRotationComplete && !secondHomeTimeStamp) {
+  secondHomeTimeStamp = millis();
+  stepsPerRotation = stepper->getCurrentPosition();
+  Serial.println("Completed first rotation");
+  Serial.print("\tsteps per rotation : ");
+  Serial.println(stepsPerRotation);
+ }
 }
 
 void needleDownInterrupt() {
   // debounce
-  if(micros() - last_micros > 400) {
+  if(micros() - last_micros > 800) {
     foundHome = true;
     if (!firstHomeFound) {
       firstHomeFound = true;
-    } else if (!firstRotationComplete) {
+      makingFirstRotation = true;
+    } else if (firstHomeFound && !firstRotationComplete) {
       firstRotationComplete = true;
+      makingFirstRotation = false;
     }
   }
+  last_micros = micros();
 }
+
