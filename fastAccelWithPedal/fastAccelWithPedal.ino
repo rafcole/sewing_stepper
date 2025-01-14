@@ -23,16 +23,16 @@ int stepperSpecsStepsPerRevolution = 200;
 int microStepsPerRevolution = driverMicroSteps/stepperSpecsStepsPerRevolution;
 
 // pedal ranges from 3.5-5v 
-unsigned int pedalPinMin = 350;
-unsigned int pedalPinMax = 10;
+unsigned int pedalPinMax = 290;
+unsigned int pedalPinMin = 14;
 
 unsigned int minSpeedInHz = 5000; // 1700 good
-unsigned int maxSpeedInHz = 49000;
+unsigned int maxSpeedInHz = 30000; // bog at 45k
 unsigned int homingSpeed = 7000;
 
 // not accessible in setup?
 unsigned int absAccelerationRate = 40000;
-unsigned int linAccelRate = 10000;
+unsigned int linAccelRate = 1000;
 
 FastAccelStepperEngine engine = FastAccelStepperEngine();
 FastAccelStepper *stepper = NULL;
@@ -56,7 +56,15 @@ int needleDownSensorPin = 4;
 volatile bool foundHome = false;
 volatile bool firstHomeFound = false;
 volatile bool machineIsHoming = false;
+volatile bool lastZero = false;
+volatile bool lastPedalUp = false;
 
+unsigned long pedalReadCount = 0;
+unsigned long pedalReadTotal = 0;
+float pedalReadAvg = 0;
+int pedalReadMax = 0;
+
+int pedalSamples[3] = {0};
 
 long stepsPerRotation = 0;
 volatile bool firstRotationComplete = false;
@@ -118,73 +126,87 @@ void setup() {
 
   // default value gets erased
   foundHome = false;
+  lastZero = !digitalRead(needleDownSensorPin);
 }
 
 void loop() {
-  // if (stepper->isRunning()) {
-  //   Serial.print("Motor running -> Current position: ");
-  //   Serial.println(stepper->getCurrentPosition());
-  // }
-
   int pedalReading = analogRead(pedalPin);
-  // Serial.println(pedalReading);
-  bool atZero = digitalRead(needleDownSensorPin);
 
-  unsigned int pedalSpeedInHz = map(pedalReading, pedalPinMax, pedalPinMin, minSpeedInHz, maxSpeedInHz);
+
+
+  pedalReadCount++;
+  pedalReadTotal += pedalReading;
+  pedalReadAvg = pedalReadTotal / pedalReadCount;
+  if (pedalReading > pedalReadMax) {
+    pedalReadMax = pedalReading;
+  }
+  if (millis() % 10 == 0) {
+    Serial.print("pedal_reading:");
+    Serial.print(pedalReading);
+    Serial.print(",");
+    Serial.print("Max_reading:");
+    Serial.print(pedalReadMax);
+    Serial.print(",");
+    Serial.print("Avg_reading:");
+    Serial.println(pedalReadAvg);
+  }
+
+
+  // Serial.println(stepper->getCurrentPosition());
+  // delay(500);
+  bool atZero = !digitalRead(needleDownSensorPin);
+  bool zeroRising = atZero && !lastZero;
+  lastZero = atZero;
+
+  if (zeroRising) {
+    // Serial.print(stepper->getCurrentPosition());
+    // Serial.println("Found Zero");
+    stepper->setCurrentPosition(0);
+  }
+
+  bool pedalUp = detectPedalUp(pedalReading);
+
+  unsigned int pedalSpeedInHz = map(pedalReading, pedalPinMin, pedalPinMax, minSpeedInHz, maxSpeedInHz);
   // Serial.println(pedalSpeedInHz);
 
 
 
-  bool pedalUp = pedalSpeedInHz < minSpeedInHz;
-  bool pedalDown = pedalSpeedInHz >= minSpeedInHz;
-
-  // foundHome = digitalRead(needleDownSensorPin);
-
-  if (pedalUp && stepper->isRunning() && firstRotationComplete) {
-    machineIsHoming = true;
-    Serial.println("Machine is homing set to true");
+  
+  // bool pedalDown = pedalSpeedInHz >= minSpeedInHz;
+  if (!pedalUp) {
+    // Serial.print("PedalUp: ");
+    // Serial.println(pedalUp);
+    // Serial.println(pedalReading);
   }
 
-  if (!stepsPerRotation && atZero){
-    Serial.println("found home");
-    setStepsPerRotation();
-    foundHome = false;
-  }
+  // Serial.print("PedalUp: ");
+  // Serial.println(pedalUp);
+  // Serial.println(pedalReading);
+  // delay(300);
+
+  machineIsHoming = pedalUp && stepper->isRunning();
+  bool machineIsHomingRising = machineIsHoming && !lastPedalUp;
+  lastPedalUp = pedalUp;
 
   // no homing information
   // default to stopping
   if (pedalUp) {
-    if (stepsPerRotation && machineIsHoming) {
-      // TODO
-      // HOMING
-      // set to homing speed
-      int stepsOfRotationCompleted = stepper->getCurrentPosition() % stepsPerRotation;
-      stepper->setCurrentPosition(0);
-      stepper->moveTo(stepsOfRotationCompleted, true);
-      // stepper->forceStop();
+    if (zeroRising) {
+      stepper->forceStopAndNewPosition(0);
+      delay(500);
+    } else if (machineIsHomingRising) {
+      // Serial.println("Setting homing speed");
+      stepper->setSpeedInHz(homingSpeed);
+      stepper->move(5900);
+      // stepper->forceStopAndNewPosition(5700);
 
-      Serial.print("Steps of rotation: ");
-      Serial.print(stepsOfRotationCompleted);
-      Serial.println();
-
-      // this presumes that the blocking call of moveTo wins out?
-      machineIsHoming = false;
-
-    } else if (stepper->isRunning() && !stepsPerRotation) {
-      stepper->forceStop();
-      Serial.println("No spr data, forced stop");
+      // Serial.println(stepper->getCurrentPosition());
     }
   } else {
-    if (foundHome) {
-      stepper->setCurrentPosition(0);
-      Serial.println("Found home while running continuously");
-    }
-    // Pedal down
-    // run as normal
-    // Serial.println("running as normal");
     stepper->setSpeedInHz(pedalSpeedInHz);
     stepper->runForward();
   }
+  delayMicroseconds(100);
 }
 
 void setStepsPerRotation() {
@@ -198,6 +220,26 @@ void setStepsPerRotation() {
   Serial.print("\tsteps per rotation : ");
   Serial.println(stepsPerRotation);
  }
+}
+
+bool detectPedalUp(int pedalReading) {
+  int numSamples = sizeof(pedalSamples) / sizeof(pedalSamples[0]);
+
+  int samplesTotal = pedalReading;
+
+  for (int i = 0; i < numSamples; i++) {
+    samplesTotal += pedalSamples[i];
+  }
+
+  int avg = samplesTotal / numSamples;
+
+  for (int i = numSamples - 1; i > 0; i--) {
+    pedalSamples[i] = pedalSamples[i-1];
+  }
+
+  pedalSamples[0] = pedalReading;
+
+  return (avg < pedalPinMin);
 }
 
 void needleDownInterrupt() {
