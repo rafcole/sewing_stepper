@@ -22,6 +22,20 @@ int driverMicroSteps = 3200;
 int stepperSpecsStepsPerRevolution = 200;
 int microStepsPerRevolution = driverMicroSteps/stepperSpecsStepsPerRevolution;
 
+// encoder
+
+// key points in the stitch cycles
+struct MachinePositions {
+  int bottomDeadCenter;
+  int needleDown;       // the point at which the hook has captured the needle thread
+  int needleExit;
+  int topDeadCenter;
+  int needleUp;         // when the take up lever has reached apex
+  int needleEnter;      // important to track esp re:needle strikes on the throat plate
+};
+
+struct MachinePositions keyPositions = {0, 50, 85, 180, 240, 275};
+
 // pedal ranges from 3.5-5v 
 unsigned int pedalPinMax = 290;
 unsigned int pedalPinMin = 14;
@@ -46,6 +60,7 @@ int encoderPinA = 3;
 int encoderPinB = 2;
 long oldPosition  = -999;
 int encoderPulsesPerRotation = 2400;
+float pulsesPerDegree = float (encoderPulsesPerRotation) / 360;
 
 Encoder myEnc(encoderPinA, encoderPinB);
 
@@ -64,7 +79,8 @@ unsigned long pedalReadTotal = 0;
 float pedalReadAvg = 0;
 int pedalReadMax = 0;
 
-int pedalSamples[3] = {0};
+// sampling of pedal signals to quash stray signals on the pedal
+int pedalSamples[5] = {0};
 
 long stepsPerRotation = 0;
 volatile bool firstRotationComplete = false;
@@ -134,22 +150,22 @@ void loop() {
 
 
 
-  pedalReadCount++;
-  pedalReadTotal += pedalReading;
-  pedalReadAvg = pedalReadTotal / pedalReadCount;
-  if (pedalReading > pedalReadMax) {
-    pedalReadMax = pedalReading;
-  }
-  if (millis() % 10 == 0) {
-    Serial.print("pedal_reading:");
-    Serial.print(pedalReading);
-    Serial.print(",");
-    Serial.print("Max_reading:");
-    Serial.print(pedalReadMax);
-    Serial.print(",");
-    Serial.print("Avg_reading:");
-    Serial.println(pedalReadAvg);
-  }
+  // pedalReadCount++;
+  // pedalReadTotal += pedalReading;
+  // pedalReadAvg = pedalReadTotal / pedalReadCount;
+  // if (pedalReading > pedalReadMax) {
+  //   pedalReadMax = pedalReading;
+  // }
+  // if (millis() % 10 == 0) {
+  //   Serial.print("pedal_reading:");
+  //   Serial.print(pedalReading);
+  //   Serial.print(",");
+  //   Serial.print("Max_reading:");
+  //   Serial.print(pedalReadMax);
+  //   Serial.print(",");
+  //   Serial.print("Avg_reading:");
+  //   Serial.println(pedalReadAvg);
+  // }
 
 
   // Serial.println(stepper->getCurrentPosition());
@@ -225,19 +241,27 @@ void setStepsPerRotation() {
 bool detectPedalUp(int pedalReading) {
   int numSamples = sizeof(pedalSamples) / sizeof(pedalSamples[0]);
 
-  int samplesTotal = pedalReading;
-
-  for (int i = 0; i < numSamples; i++) {
-    samplesTotal += pedalSamples[i];
-  }
-
-  int avg = samplesTotal / numSamples;
+  int samplesTotal = 0;
 
   for (int i = numSamples - 1; i > 0; i--) {
     pedalSamples[i] = pedalSamples[i-1];
+    samplesTotal += pedalSamples[i];
   }
 
   pedalSamples[0] = pedalReading;
+  samplesTotal += pedalSamples[0];
+
+  float avg = float(samplesTotal) / numSamples;
+
+  Serial.print("SampledAvg:");
+  Serial.print(avg);
+  Serial.print(",");
+  if (avg > pedalReadMax) {
+    pedalReadMax = avg;
+  }
+
+  Serial.print("Max:");
+  Serial.println(pedalReadMax);
 
   return (avg < pedalPinMin);
 }
