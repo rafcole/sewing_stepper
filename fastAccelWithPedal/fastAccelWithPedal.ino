@@ -60,7 +60,7 @@ long last_micros = 0;
 
 // encoder
 int encoderPinA = 3;
-int encoderPinB = 2;
+int encoderPinB = 4;
 long oldPosition  = -999;
 int encoderPulsesPerRotation = 2400;
 float pulsesPerDegree = float (encoderPulsesPerRotation) / 360;
@@ -71,8 +71,9 @@ Encoder myEnc(encoderPinA, encoderPinB);
 
 // button press logic tester
 // normally closed momentary
-int needleDownSensorPin = 4;
+int needleDownSensorPin = 2;
 // volatile bool lastMoveHomed = false;
+volatile bool foundZero = false;
 volatile bool foundHome = false;
 volatile bool firstHomeFound = false;
 volatile bool machineIsHoming = false;
@@ -112,7 +113,7 @@ void setup() {
 
   // ISR for external sensors
   pinMode(needleDownSensorPin, INPUT_PULLUP);
-
+  attachInterrupt(digitalPinToInterrupt(needleDownSensorPin), needleDownInterrupt, RISING);
   lastZero = !digitalRead(needleDownSensorPin);
 }
 
@@ -121,18 +122,18 @@ long pulsesTravelled = 0;
 void loop() {
   int pedalReading = updatePedalReading(analogRead(pedalPin));
 
-  bool atZero = !digitalRead(needleDownSensorPin);
-  bool zeroRising = atZero && !lastZero;
-  lastZero = atZero;
+  // bool atZero = !digitalRead(needleDownSensorPin);
+  // bool zeroRising = atZero && !lastZero;
+  // lastZero = atZero;
 
   pulsesTravelled += myEnc.read() - pulsesTravelled;
 
-  if (zeroRising) {
-    myEnc.write(0);
-    // Serial.print("encoder pos:");
-    // Serial.println(myEnc.read());
-    stepper->setCurrentPosition(0);
-  }
+  // if (zeroRising) {
+  //   myEnc.write(0);
+  //   // Serial.print("encoder pos:");
+  //   // Serial.println(myEnc.read());
+  //   stepper->setCurrentPosition(0);
+  // }
 
   bool pedalUp = pedalReading < pedalPinMin - 5;
 
@@ -276,17 +277,20 @@ int updatePedalReading(int pedalReading) {
 }
 
 void needleDownInterrupt() {
+  foundZero = true;
+  myEnc.write(0);
+  stepper->setCurrentPosition(0);
   // debounce
-  if(micros() - last_micros > 800) {
-    foundHome = true;
-    if (!firstHomeFound) {
-      firstHomeFound = true;
-      makingFirstRotation = true;
-    } else if (firstHomeFound && !firstRotationComplete) {
-      firstRotationComplete = true;
-      makingFirstRotation = false;
-    }
-  }
-  last_micros = micros();
+  // if(micros() - last_micros > 800) {
+  //   foundHome = true;
+  //   if (!firstHomeFound) {
+  //     firstHomeFound = true;
+  //     makingFirstRotation = true;
+  //   } else if (firstHomeFound && !firstRotationComplete) {
+  //     firstRotationComplete = true;
+  //     makingFirstRotation = false;
+  //   }
+  // }
+  // last_micros = micros();
 }
 
