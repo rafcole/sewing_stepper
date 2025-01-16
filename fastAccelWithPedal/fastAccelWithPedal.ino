@@ -94,6 +94,7 @@ volatile bool firstRotationComplete = false;
 volatile bool makingFirstRotation = false;
 long firstHomeTimeStamp = 0;
 long secondHomeTimeStamp = 0;
+volatile int lastEncoderReading = 0;
 
 void setup() {
   // initialize serial communication at 9600 bits per second:
@@ -119,21 +120,20 @@ void setup() {
 
 long pulsesTravelled = 0;
 
+void updatePulsesTravelled() {
+  long encoderReading = myEnc.read();
+  pulsesTravelled += encoderReading - lastEncoderReading;
+  lastEncoderReading = encoderReading;
+}
+
 void loop() {
   int pedalReading = updatePedalReading(analogRead(pedalPin));
 
   // bool atZero = !digitalRead(needleDownSensorPin);
   // bool zeroRising = atZero && !lastZero;
   // lastZero = atZero;
-
+  updatePulsesTravelled();
   pulsesTravelled += myEnc.read() - pulsesTravelled;
-
-  // if (zeroRising) {
-  //   myEnc.write(0);
-  //   // Serial.print("encoder pos:");
-  //   // Serial.println(myEnc.read());
-  //   stepper->setCurrentPosition(0);
-  // }
 
   bool pedalUp = pedalReading < pedalPinMin - 5;
 
@@ -276,21 +276,18 @@ int updatePedalReading(int pedalReading) {
   return avg;
 }
 
+
 void needleDownInterrupt() {
+  long encoderReading = myEnc.readAndReset();
+
+  // hand off passing over zero
+  if (lastEncoderReading > 2390) {
+    pulsesTravelled += (2400 - lastEncoderReading);
+  }
+  // not accounting for going opposite direction because that would be done by hand, not during sewing
+  lastEncoderReading = 0;
+
   foundZero = true;
-  myEnc.write(0);
   stepper->setCurrentPosition(0);
-  // debounce
-  // if(micros() - last_micros > 800) {
-  //   foundHome = true;
-  //   if (!firstHomeFound) {
-  //     firstHomeFound = true;
-  //     makingFirstRotation = true;
-  //   } else if (firstHomeFound && !firstRotationComplete) {
-  //     firstRotationComplete = true;
-  //     makingFirstRotation = false;
-  //   }
-  // }
-  // last_micros = micros();
 }
 
