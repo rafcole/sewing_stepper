@@ -80,7 +80,9 @@ volatile bool machineIsHoming = false;
 volatile bool machineIsHomingToggle = false;
 volatile bool machineIsSewing = false;
 volatile bool lastZero = false;
+volatile unsigned long millisLastZero; 
 volatile bool lastPedalUp = false;
+volatile long pulsesAtLastZero;
 
 unsigned long pedalReadCount = 0;
 unsigned long pedalReadTotal = 0;
@@ -118,6 +120,8 @@ void setup() {
   pinMode(needleDownSensorPin, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(needleDownSensorPin), needleDownInterrupt, RISING);
   lastZero = !digitalRead(needleDownSensorPin);
+
+  millisLastZero = millis();
 }
 
 long pulsesTravelled = 0;
@@ -130,7 +134,7 @@ void updatePulsesTravelled() {
 
 void loop() {
   Serial.println(getCurrentDegrees());
-  delay(40);
+  // delay(40);
   int pedalReading = updatePedalReading();
 
   updatePulsesTravelled();
@@ -177,7 +181,7 @@ void loop() {
 
     // false rising edge accounts for ~15 degrees of this error
     // remainder probably momentum
-    int degreesErrorCorrection = 20;
+    int degreesErrorCorrection = 12;
     while (getCurrentDegrees() != keyPositions.needleDown - degreesErrorCorrection && getCurrentDegrees() != keyPositions.needleUp - degreesErrorCorrection) {
 
     }
@@ -335,16 +339,23 @@ int updatePedalReading() {
 
 
 void needleDownInterrupt() {
-  long encoderReading = myEnc.readAndReset();
+  // debounce false positive from needle down detector
+  // didn't work still getting error
+  if (myEnc.read() > 500) {
+    // Serial.println("single zero");
+    millisLastZero = millis();
+    long encoderReading = myEnc.readAndReset();
 
-  // hand off passing over zero
-  if (lastEncoderReading > 2390) {
-    pulsesTravelled += (2400 - lastEncoderReading);
+    // hand off passing over zero
+    if (lastEncoderReading > 2390) {
+      pulsesTravelled += (2400 - lastEncoderReading);
+    }
+    // not accounting for going opposite direction because that would be done by hand, not during sewing
+    lastEncoderReading = 0;
+
+    foundZero = true;
+    stepper->setCurrentPosition(0);
   }
-  // not accounting for going opposite direction because that would be done by hand, not during sewing
-  lastEncoderReading = 0;
-
-  foundZero = true;
-  stepper->setCurrentPosition(0);
+  
 }
 
