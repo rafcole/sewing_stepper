@@ -11,19 +11,21 @@
 // #define enablePinStepper 26
 // #define stepPinStepper 17
 
+
+
 FastAccelStepperEngine engine = FastAccelStepperEngine();
 FastAccelStepper *stepper = NULL;
 
 
+#define zeroSensorPin 4
 
-
-int encoderPinA = 3;
-int encoderPinB = 2;
+#define encoderPinA 3
+#define encoderPinB 2
 long encoderPulsesPerRotation = 2400;
 long oldPosition = 0;
 Encoder myEnc(encoderPinA, encoderPinB);
 
-int stepsPerRotation = 5712;
+#define stepsPerRotation 5712
 
 float stepsPerPulse = 2.38;
 
@@ -31,10 +33,12 @@ float stepsPerPulse = 2.38;
 int minPulsesThreshold = 66;
 int minStepsThreshold = 500;
 
-
+long timerCounter = 0;
 
 
 void setup() {
+  pinMode(zeroSensorPin, INPUT_PULLUP);
+
   Serial.begin(115200);
   engine.init();
   stepper = engine.stepperConnectToPin(stepPinStepper);
@@ -46,15 +50,15 @@ void setup() {
     // If auto enable/disable need delays, just add (one or both):
     // stepper->setDelayToEnable(50);
     // stepper->setDelayToDisable(1000);
-
-    stepper->setSpeedInHz(35000);  // the parameter is us/step !!!
-    stepper->setAcceleration(10000);
+    stepper->setLinearAcceleration(1000);
+    stepper->setSpeedInHz(45000);  // the parameter is us/step !!!
+    stepper->setAcceleration(20000);
 
 
     // approaching 2.38?
     // doesn't accout for asymptotic decay
     // 5712
-    int stepsPerRotation = encoderPulsesPerRotation * 2.38;
+    // int stepsPerRotation = encoderPulsesPerRotation * 2.38;
     int chatGPTSPR = 7677;
 
 
@@ -74,7 +78,14 @@ void setup() {
 }
 
 void loop() {
-  manualIntervention();
+  if (millis() - timerCounter > 3000) {
+    timerCounter = millis();
+    manualIntervention();
+  }
+  if (!digitalRead(zeroSensorPin)) {
+    myEnc.write(0);
+    Serial.println("Passed zero");
+  }
 }
 
 void goToZero(long offset) {
@@ -104,20 +115,12 @@ void goToZero(long offset) {
     Serial.print("Steps to move: ");
     Serial.println(stepsToMove);
 
-    stepper->move(stepsToMove, true);
+    stepper->move(stepsToMove);
   }
 
-
-  // while (lastEncoderPos != 0) {
-  //   long stepsToMove = stepsPerRotation * (encoderPulsesPerRotation - offset);
-  //   stepper->moveTo(stepsToMove, true);
-
-  // }
 }
 
 void manualIntervention() {
-  delay(2000);
-
   long offset = myEnc.read() % 2400;
   goToZero(offset);
 
