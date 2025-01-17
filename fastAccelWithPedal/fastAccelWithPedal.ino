@@ -49,7 +49,7 @@ unsigned int homingSpeed = 7000;
 
 // not accessible in setup?
 unsigned int absAccelerationRate = 40000;
-unsigned int linAccelRate = 1000;
+unsigned int linAccelRate = 100;
 
 FastAccelStepperEngine engine = FastAccelStepperEngine();
 FastAccelStepper *stepper = NULL;
@@ -77,6 +77,8 @@ volatile bool foundZero = false;
 volatile bool foundHome = false;
 volatile bool firstHomeFound = false;
 volatile bool machineIsHoming = false;
+volatile bool machineIsHomingToggle = false;
+volatile bool machineIsSewing = false;
 volatile bool lastZero = false;
 volatile bool lastPedalUp = false;
 
@@ -129,11 +131,7 @@ void updatePulsesTravelled() {
 void loop() {
   int pedalReading = updatePedalReading(analogRead(pedalPin));
 
-  // bool atZero = !digitalRead(needleDownSensorPin);
-  // bool zeroRising = atZero && !lastZero;
-  // lastZero = atZero;
   updatePulsesTravelled();
-  pulsesTravelled += myEnc.read() - pulsesTravelled;
 
   bool pedalUp = pedalReading < pedalPinMin - 5;
 
@@ -142,63 +140,99 @@ void loop() {
   if (pedalUp) {
     pedalSpeedInHz = 0;
   } else {
-     pedalSpeedInHz = map(pedalReading, pedalPinMin, pedalPinMax, minSpeedInHz, maxSpeedInHz);
+    pedalSpeedInHz = map(pedalReading, pedalPinMin, pedalPinMax, minSpeedInHz, maxSpeedInHz);
   }
 
-  machineIsHoming = debounceHoming(pedalUp) && degreesTravelled() > 40 && !(stepper->isStopping());
+  machineIsHoming = debounceHoming(pedalUp) && degreesTravelled() > 40;
 
-  Serial.print("\n\nDegrees travelled: ");
-  Serial.println(degreesTravelled());
-
-  bool machineIsHomingRising = machineIsHoming && !lastPedalUp ;
-
-  lastPedalUp = pedalUp;
 
   // no homing information
   // default to stopping
-  if (pedalUp && !(stepper->isStopping())) {
-
-
+  if (!stepper->isRunning() && pedalUp) {
+    machineIsSewing = false;
+    machineIsHoming = false;
+    machineIsHomingToggle = false;
+    pulsesTravelled = 0;
+  } else if (machineIsHoming && !machineIsHomingToggle) {
+    machineIsHomingToggle = true;
     Serial.println("Setting homing speed");
+    Serial.println(stepper->getAcceleration());
+    stepper->setAcceleration(10000000);
+    stepper->setLinearAcceleration(10);
     stepper->setSpeedInHz(homingSpeed);
+    stepper->applySpeedAcceleration();
+    stepper->keepRunning();
 
-    int pulsesSoFar = myEnc.read();
-    int pulsesToGo = 2400 - pulsesSoFar;
+    // stepper->stopMove();
+    // stepper->forceStopAndNewPosition(0);
+    // stepper->move(2000);
 
-    int rawDegrees = pulsesSoFar / pulsesPerDegree;
-
-    int currentAngle = rawDegrees % 360;
-    int degreesToZero = 360 - currentAngle;
-
-    Serial.print("Current angle: ");
-    Serial.println(currentAngle);
-
+    int degreesToZero = getDegreesToZero();
     int degreesToNeedleDown = degreesToZero + keyPositions.needleDown;
     int degreesToNextValidStopPos = degreesToNeedleDown % 180;
-    
-    int stepsToTravel = degreesToNextValidStopPos * stepsPerDegree;
-    Serial.print("Steps to Travel: ");
-    Serial.println(stepsToTravel);
 
-    stepper->setCurrentPosition(0);
+    while (getCurrentDegrees() != keyPositions.needleDown ) {
 
-    if (stepsToTravel > 100) {
-      stepper->moveTo(stepsToTravel, true); // blocking defeats zero rising sensor
-      while(stepper->getCurrentPosition() != stepsToTravel) {
-
-      }
-      Serial.println("confirm non blocking"); // blocking is actually blocking, not just a flag
-      stepper->forceStop();
-
-      delay(1000);
-
-      pulsesTravelled = 0;
-      delay(300);
     }
-  } else {
+    
+    stepper->forceStop();
+
+    delay(300);
+    Serial.println(getCurrentDegrees());
+    
+    // int stepsToTravel = degreesToNextValidStopPos * stepsPerDegree;
+
+    // // arbitrary thresholding for when the machine wants to run in reverse because it overshot
+    // // due to hand wheel momentum
+    // Serial.print("Steps to Travel: ");
+    // Serial.println(stepsToTravel);
+
+    // // reset the steppers current op
+    // Serial.println(stepper->getCurrentSpeedInMilliHz(false) / 1000);
+
+    // int stepperSpeedInHz = ((stepper->getCurrentSpeedInMilliHz(false) / 1000) > (maxSpeedInHz * .66));
+
+    // int overshoot = 0;
+
+    // if (stepperSpeedInHz > (maxSpeedInHz * 33)) {
+    //   overshoot += 180;
+    // } else if (stepperSpeedInHz > (maxSpeedInHz * 66)) {
+    //   overshoot += 360;
+    // }
+
+    // // more gentle halting
+    // if (overshoot) {
+    //   Serial.println("overshoot logic");
+    //   stepsToTravel += overshoot;
+    //   // stepper->forceStopAndNewPosition(0);
+    //   // TODO could force stop, recalculate and then move, not so different than how industrial machines hit the brakes
+    // } else {
+    //   Serial.println("normal logic branch");
+    //   // stepper->setCurrentPosition(0);
+    // }
+
+    // // stepper->setCurrentPosition(0);
+    // // stepper->forceStopAndNewPosition(0);
+
+    // // degrees travel check might make this check obsolete
+    // if (stepsToTravel > 100) {
+    //   Serial.print("steps to move");
+    //   Serial.println(stepsToTravel);
+    //   stepper->move(stepsToTravel); // blocking defeats zero rising sensor
+    //   // delay(1000);
+    // }
+    stepper->setAcceleration(absAccelerationRate);
+    stepper->applySpeedAcceleration();
+  } else if (pedalReading > pedalPinMin && !machineIsHoming) {
+    machineIsSewing = true;
+    machineIsHomingToggle = false;
+    machineIsHoming = false;
+
     Serial.println("else branch");
     stepper->setSpeedInHz(pedalSpeedInHz);
-    stepper->runForward();
+    Serial.print("return value for runForward(): ");
+    Serial.println(stepper->runForward());
+    stepper->keepRunning();
   }
   // delayMicroseconds(100);
 }
@@ -209,6 +243,21 @@ int degreesTravelled() {
   } else {
     return pulsesTravelled / pulsesPerDegree;
   }
+}
+
+int getCurrentDegrees() {
+  int pulsesSoFar = myEnc.read();
+  int pulsesToGo = 2400 - pulsesSoFar;
+
+  int rawDegrees = pulsesSoFar / pulsesPerDegree;
+
+  int currentAngle = rawDegrees % 360;
+  return currentAngle;
+}
+
+int getDegreesToZero() {
+
+  return 360 - getCurrentDegrees();
 }
 
 void setStepsPerRotation() {
