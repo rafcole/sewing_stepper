@@ -129,7 +129,9 @@ void updatePulsesTravelled() {
 }
 
 void loop() {
-  int pedalReading = updatePedalReading(analogRead(pedalPin));
+  Serial.println(getCurrentDegrees());
+  delay(40);
+  int pedalReading = updatePedalReading();
 
   updatePulsesTravelled();
 
@@ -153,6 +155,7 @@ void loop() {
     machineIsHoming = false;
     machineIsHomingToggle = false;
     pulsesTravelled = 0;
+    stepper->forceStop();
   } else if (machineIsHoming && !machineIsHomingToggle) {
     machineIsHomingToggle = true;
     Serial.println("Setting homing speed");
@@ -169,13 +172,17 @@ void loop() {
 
     int degreesToZero = getDegreesToZero();
     int degreesToNeedleDown = degreesToZero + keyPositions.needleDown;
+    // int degreesToNeedleUp = degreesToZero + keyPositions.needleUp;
     int degreesToNextValidStopPos = degreesToNeedleDown % 180;
 
-    while (getCurrentDegrees() != keyPositions.needleDown ) {
+    // false rising edge accounts for ~15 degrees of this error
+    // remainder probably momentum
+    int degreesErrorCorrection = 20;
+    while (getCurrentDegrees() != keyPositions.needleDown - degreesErrorCorrection && getCurrentDegrees() != keyPositions.needleUp - degreesErrorCorrection) {
 
     }
     
-    stepper->forceStop();
+    stepper->forceStopAndNewPosition(0);
 
     delay(300);
     Serial.println(getCurrentDegrees());
@@ -252,11 +259,11 @@ int getCurrentDegrees() {
   int rawDegrees = pulsesSoFar / pulsesPerDegree;
 
   int currentAngle = rawDegrees % 360;
+
   return currentAngle;
 }
 
 int getDegreesToZero() {
-
   return 360 - getCurrentDegrees();
 }
 
@@ -293,9 +300,10 @@ bool debounceHoming(bool pedalStatus) {
   return pedalStatus;
 }
 
-int updatePedalReading(int pedalReading) {
+int updatePedalReading() {
   // TODO change to bit shift
 
+  int pedalReading(analogRead(pedalPin));
   int numSamples = sizeof(pedalSamples) / sizeof(pedalSamples[0]);
 
   int samplesTotal = 0;
