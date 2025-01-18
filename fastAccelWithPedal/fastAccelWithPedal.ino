@@ -44,12 +44,12 @@ unsigned int reservedSingleStitchMin = 20;
 unsigned int reservedSingleStitchMax = 40;
 
 unsigned int minSpeedInHz = 5000; // 1700 good
-unsigned int maxSpeedInHz = 30000; // bog at 45k
+unsigned int maxSpeedInHz = 40000; // bog at 45k
 unsigned int homingSpeed = 7000;
 
 // not accessible in setup?
-unsigned int absAccelerationRate = 40000;
-unsigned int linAccelRate = 100;
+unsigned int absAccelerationRate = 30000;
+unsigned int linAccelRate = 200;
 
 FastAccelStepperEngine engine = FastAccelStepperEngine();
 FastAccelStepper *stepper = NULL;
@@ -63,9 +63,10 @@ int encoderPinA = 3;
 int encoderPinB = 4;
 long oldPosition  = -999;
 int encoderPulsesPerRotation = 2400;
-float pulsesPerDegree = float (encoderPulsesPerRotation) / 360;
+// 6.66... for 600 resolution encoder
+float pulsesPerDegree = float (encoderPulsesPerRotation) / float(360);
 
-float stepsPerDegree = 5712.00 / 360;
+float stepsPerDegree = 6250.00 / 360;
 
 Encoder myEnc(encoderPinA, encoderPinB);
 
@@ -99,6 +100,8 @@ volatile bool makingFirstRotation = false;
 long firstHomeTimeStamp = 0;
 long secondHomeTimeStamp = 0;
 volatile int lastEncoderReading = 0;
+volatile int maxSteps = 0;
+volatile long pulsesTravelled = 0;
 
 void setup() {
   // initialize serial communication at 9600 bits per second:
@@ -122,22 +125,20 @@ void setup() {
   lastZero = !digitalRead(needleDownSensorPin);
 
   millisLastZero = millis();
-}
-
-long pulsesTravelled = 0;
-
-void updatePulsesTravelled() {
-  long encoderReading = myEnc.read();
-  pulsesTravelled += encoderReading - lastEncoderReading;
-  lastEncoderReading = encoderReading;
+  stepper->setForwardPlanningTimeInMs(16);
 }
 
 void loop() {
+  Serial.println(maxSteps);
   Serial.println(getCurrentDegrees());
-  // delay(40);
+  delay(40);
   int pedalReading = updatePedalReading();
 
   updatePulsesTravelled();
+
+  if (foundZero) {
+    stepper->setCurrentPosition(0);
+  }
 
   bool pedalUp = pedalReading < pedalPinMin - 5;
 
@@ -161,18 +162,60 @@ void loop() {
     pulsesTravelled = 0;
     stepper->forceStop();
   } else if (machineIsHoming && !machineIsHomingToggle) {
-    machineIsHomingToggle = true;
-    Serial.println("Setting homing speed");
-    Serial.println(stepper->getAcceleration());
-    stepper->setAcceleration(10000000);
-    stepper->setLinearAcceleration(10);
+
+    // Serial.println("Setting homing speed");
+    // Serial.println(stepper->getAcceleration());
+    stepper->setAcceleration(100000);
+    stepper->setLinearAcceleration(80);
     stepper->setSpeedInHz(homingSpeed);
     stepper->applySpeedAcceleration();
     stepper->keepRunning();
+    
+    int currentSpeed = pedalReading;
+    // int currentSpeed = stepper->getCurrentSpeedInMilliHz() / 1000;
+    if ( pedalReading < maxSpeedInHz * .5 ) {
+      if (foundZero) {
+        // Serial.print("destination: ");
+        // Serial.println(stepper->getPositionAfterCommandsCompleted());
+        machineIsHomingToggle = true;
+
+        stepper->forceStop();
+        machineIsSewing = false;
+        stepper->setAcceleration(absAccelerationRate);
+        stepper->applySpeedAcceleration();
+      }
+      // good needle down routine
+       else {
+        int currentDegreePosition = getCurrentDegrees();
+        int currentStepperPosition = stepper->getCurrentPosition();
+        int stepperDestination = stepper->getPositionAfterCommandsCompleted();
+
+        int stepperDestinationDeltaDegrees = (stepperDestination - currentStepperPosition) / stepsPerDegree;
+
+        // go to needle up
+        int degreesToAdd = 220 - currentDegreePosition - stepperDestinationDeltaDegrees;
+        int stepsToAdd = degreesToAdd * stepsPerDegree;
+
+        stepper->move(stepsToAdd, true);
+        stepper->forceStop();
+      } 
+    }
+
+
+
+
+
+
 
     // stepper->stopMove();
     // stepper->forceStopAndNewPosition(0);
     // stepper->move(2000);
+
+    // if (stepper->getCurrentSpeedInMilliHz() / 1000 > maxSpeedInHz * .66) {
+    //   stepper->move(stepsPerRotation / 2, true);
+    // } else {
+    //   stepper->forceStop();
+    // }
 
     int degreesToZero = getDegreesToZero();
     int degreesToNeedleDown = degreesToZero + keyPositions.needleDown;
@@ -181,71 +224,31 @@ void loop() {
 
     // false rising edge accounts for ~15 degrees of this error
     // remainder probably momentum
-    int degreesErrorCorrection = 12;
-    while (getCurrentDegrees() != keyPositions.needleDown - degreesErrorCorrection && getCurrentDegrees() != keyPositions.needleUp - degreesErrorCorrection) {
-
-    }
-    
-    stepper->forceStopAndNewPosition(0);
-
-    delay(300);
-    Serial.println(getCurrentDegrees());
-    
-    // int stepsToTravel = degreesToNextValidStopPos * stepsPerDegree;
-
-    // // arbitrary thresholding for when the machine wants to run in reverse because it overshot
-    // // due to hand wheel momentum
-    // Serial.print("Steps to Travel: ");
-    // Serial.println(stepsToTravel);
-
-    // // reset the steppers current op
-    // Serial.println(stepper->getCurrentSpeedInMilliHz(false) / 1000);
-
-    // int stepperSpeedInHz = ((stepper->getCurrentSpeedInMilliHz(false) / 1000) > (maxSpeedInHz * .66));
-
-    // int overshoot = 0;
-
-    // if (stepperSpeedInHz > (maxSpeedInHz * 33)) {
-    //   overshoot += 180;
-    // } else if (stepperSpeedInHz > (maxSpeedInHz * 66)) {
-    //   overshoot += 360;
+    int degreesErrorCorrection = 0;
+    // while (getCurrentDegrees() != keyPositions.needleDown - degreesErrorCorrection && getCurrentDegrees() != keyPositions.needleUp - degreesErrorCorrection) {
+    //   Serial.println("stuck here?");
     // }
+ 
 
-    // // more gentle halting
-    // if (overshoot) {
-    //   Serial.println("overshoot logic");
-    //   stepsToTravel += overshoot;
-    //   // stepper->forceStopAndNewPosition(0);
-    //   // TODO could force stop, recalculate and then move, not so different than how industrial machines hit the brakes
-    // } else {
-    //   Serial.println("normal logic branch");
-    //   // stepper->setCurrentPosition(0);
-    // }
-
-    // // stepper->setCurrentPosition(0);
-    // // stepper->forceStopAndNewPosition(0);
-
-    // // degrees travel check might make this check obsolete
-    // if (stepsToTravel > 100) {
-    //   Serial.print("steps to move");
-    //   Serial.println(stepsToTravel);
-    //   stepper->move(stepsToTravel); // blocking defeats zero rising sensor
-    //   // delay(1000);
-    // }
-    stepper->setAcceleration(absAccelerationRate);
-    stepper->applySpeedAcceleration();
   } else if (pedalReading > pedalPinMin && !machineIsHoming) {
     machineIsSewing = true;
     machineIsHomingToggle = false;
     machineIsHoming = false;
 
-    Serial.println("else branch");
+    // Serial.println("else branch");
     stepper->setSpeedInHz(pedalSpeedInHz);
-    Serial.print("return value for runForward(): ");
-    Serial.println(stepper->runForward());
-    stepper->keepRunning();
+    // Serial.print("return value for runForward(): ");
+    // Serial.println(s);
+    stepper->runForward();
+    // stepper->keepRunning();
+        Serial.print("destination: ");
+        Serial.println(stepper->getPositionAfterCommandsCompleted());
+        Serial.print("Current pos:");
+        Serial.println(stepper->getCurrentPosition());
   }
-  // delayMicroseconds(100);
+
+  foundZero = false;
+  delayMicroseconds(100);
 }
 
 int degreesTravelled() {
@@ -258,13 +261,8 @@ int degreesTravelled() {
 
 int getCurrentDegrees() {
   int pulsesSoFar = myEnc.read();
-  int pulsesToGo = 2400 - pulsesSoFar;
 
-  int rawDegrees = pulsesSoFar / pulsesPerDegree;
-
-  int currentAngle = rawDegrees % 360;
-
-  return currentAngle;
+  return pulsesSoFar / pulsesPerDegree;
 }
 
 int getDegreesToZero() {
@@ -283,8 +281,6 @@ void setStepsPerRotation() {
   Serial.println(stepsPerRotation);
  }
 }
-
-
 
 bool debounceHoming(bool pedalStatus) {
 
@@ -337,6 +333,11 @@ int updatePedalReading() {
   return avg;
 }
 
+void updatePulsesTravelled() {
+  long encoderReading = myEnc.read();
+  pulsesTravelled += encoderReading - lastEncoderReading;
+  lastEncoderReading = encoderReading;
+}
 
 void needleDownInterrupt() {
   // debounce false positive from needle down detector
@@ -350,11 +351,17 @@ void needleDownInterrupt() {
     if (lastEncoderReading > 2390) {
       pulsesTravelled += (2400 - lastEncoderReading);
     }
+
+    int stepperPosition = stepper->getCurrentPosition();
+
+    if (stepperPosition > maxSteps) {
+      maxSteps = stepperPosition;
+    }
+    
     // not accounting for going opposite direction because that would be done by hand, not during sewing
     lastEncoderReading = 0;
 
     foundZero = true;
-    stepper->setCurrentPosition(0);
   }
   
 }
