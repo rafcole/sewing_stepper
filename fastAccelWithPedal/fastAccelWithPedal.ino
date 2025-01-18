@@ -103,6 +103,8 @@ volatile int lastEncoderReading = 0;
 volatile int maxSteps = 0;
 volatile long pulsesTravelled = 0;
 
+#define thumbButtonPin 12
+
 void setup() {
   // initialize serial communication at 9600 bits per second:
   Serial.begin(115200);
@@ -124,11 +126,19 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(needleDownSensorPin), needleDownInterrupt, RISING);
   lastZero = !digitalRead(needleDownSensorPin);
 
+  pinMode(thumbButtonPin, INPUT);
+
   millisLastZero = millis();
   stepper->setForwardPlanningTimeInMs(16);
 }
 
 void loop() {
+  bool thumbButtonPressed = digitalRead(thumbButtonPin);
+
+  if (thumbButtonPressed) {
+    Serial.println("ButtonPress");
+  }
+
   Serial.println(maxSteps);
   Serial.println(getCurrentDegrees());
   delay(40);
@@ -150,7 +160,7 @@ void loop() {
     pedalSpeedInHz = map(pedalReading, pedalPinMin, pedalPinMax, minSpeedInHz, maxSpeedInHz);
   }
 
-  machineIsHoming = debounceHoming(pedalUp) && degreesTravelled() > 40;
+  machineIsHoming = debounceHoming(pedalUp) && degreesTravelled() > 40 || thumbButtonPressed;
 
 
   // no homing information
