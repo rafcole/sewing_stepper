@@ -2,6 +2,8 @@
 #include "AVRStepperPins.h" // Only required for AVR controllers
 #include <Encoder.h>
 
+#include "AcksenButton.h"
+
 
 // // Mega
 // #define stepPinStepper   6 // must be 6, 7, 8 for MEGA 2560
@@ -104,6 +106,20 @@ volatile int maxSteps = 0;
 volatile long pulsesTravelled = 0;
 
 #define thumbButtonPin 12
+int thumbButtonDebounce = 80;
+AcksenButton thumbButton = AcksenButton(thumbButtonPin, ACKSEN_BUTTON_MODE_NORMAL, thumbButtonDebounce, INPUT);
+
+// ==========================================   
+//  #####  ####### ####### #     # ######  
+// #     # #          #    #     # #     # 
+// #       #          #    #     # #     # 
+//  #####  #####      #    #     # ######  
+//       # #          #    #     # #       
+// #     # #          #    #     # #       
+//  #####  #######    #     #####  #       
+// ==========================================      
+
+
 
 void setup() {
   // initialize serial communication at 9600 bits per second:
@@ -126,22 +142,41 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(needleDownSensorPin), needleDownInterrupt, RISING);
   lastZero = !digitalRead(needleDownSensorPin);
 
-  pinMode(thumbButtonPin, INPUT);
+  // pinMode(thumbButtonPin, INPUT);
 
   millisLastZero = millis();
-  stepper->setForwardPlanningTimeInMs(16);
+  stepper->setForwardPlanningTimeInMs(12);
 }
 
+// ==========================================           
+//  ##       #######  #######  ####### 
+//  ##            ##       ##       ## 
+//  ##       ##   ##  ##   ##  ####### 
+//  ##   ##  ##   ##  ##   ##  ##      
+//  #######  #######  #######  ##   
+// ==========================================   
+
 void loop() {
-  bool thumbButtonPressed = digitalRead(thumbButtonPin);
+  // Serial.println(millis());
+  // Serial.println(millis() % 4 == 0);
+  // if (millis() % 1000 == 0) {
+  //   Serial.print("Current Degrees: ");
+  //   Serial.println(getCurrentDegrees());
+  // }
 
-  if (thumbButtonPressed) {
-    Serial.println("ButtonPress");
-  }
+  thumbButton.refreshStatus();
 
-  Serial.println(maxSteps);
-  Serial.println(getCurrentDegrees());
-  delay(40);
+  // onPressed -> rising edge (so use for latching?)
+  // getButtonState -> currently held high
+  // bool thumbButtonRising = thumbButton.onPressed();
+  bool thumbButtonHigh = thumbButton.getButtonState();
+  bool thumbButtonFalling = thumbButton.onReleased();
+  
+  // if (thumbButtonRising) {
+  //   Serial.println("ButtonPress");
+  // }
+
+  // delay(40);
   int pedalReading = updatePedalReading();
 
   updatePulsesTravelled();
@@ -160,21 +195,41 @@ void loop() {
     pedalSpeedInHz = map(pedalReading, pedalPinMin, pedalPinMax, minSpeedInHz, maxSpeedInHz);
   }
 
-  machineIsHoming = debounceHoming(pedalUp) && degreesTravelled() > 40 || thumbButtonPressed;
+  machineIsHoming = (machineIsSewing && debounceHoming(pedalUp) && !thumbButtonHigh) && (degreesTravelled() > 40);
 
 
   // no homing information
   // default to stopping
-  if (!stepper->isRunning() && pedalUp) {
+  if (thumbButtonHigh && !stepper->isRunning()) { // Thumb button pressed
+    // just get it going and let it catch the other homing branch later
+    Serial.println("Thumb button branch");
+    // if (!machineIsSewing) {
+    machineIsSewing = true;
+    machineIsHoming = true;
+    
+    // thumb button was able to sneak in a state change after homing burn down but before the motor is disabled
+    // which caused a latching effect
+    machineIsHomingToggle = false;
+
+    stepper->setSpeedInHz(minSpeedInHz);
+    // stepper->move(400);
+    stepper->runForward();
+
+  } else if (!stepper->isRunning() && pedalUp && !thumbButtonHigh && machineIsSewing) { // End of sewing
+    Serial.println("End of sewing branch");
     machineIsSewing = false;
     machineIsHoming = false;
     machineIsHomingToggle = false;
     pulsesTravelled = 0;
-    stepper->forceStop();
-  } else if (machineIsHoming && !machineIsHomingToggle) {
+    stepper->forceStopAndNewPosition(0);
 
-    // Serial.println("Setting homing speed");
-    // Serial.println(stepper->getAcceleration());
+
+    // delay(300);
+    Serial.println(getCurrentDegrees());
+  } else if (machineIsHoming && !machineIsHomingToggle) { // Homing
+    Serial.println("\n\n=======================================\n");
+
+    Serial.println("Homing branch");
     stepper->setAcceleration(100000);
     stepper->setLinearAcceleration(80);
     stepper->setSpeedInHz(homingSpeed);
@@ -183,35 +238,115 @@ void loop() {
     
     int currentSpeed = pedalReading;
     // int currentSpeed = stepper->getCurrentSpeedInMilliHz() / 1000;
-    if ( pedalReading < maxSpeedInHz * .5 ) {
-      if (foundZero) {
-        // Serial.print("destination: ");
-        // Serial.println(stepper->getPositionAfterCommandsCompleted());
-        machineIsHomingToggle = true;
 
-        stepper->forceStop();
-        machineIsSewing = false;
-        stepper->setAcceleration(absAccelerationRate);
-        stepper->applySpeedAcceleration();
+    // if the speed is too high, let the loop execute as long as it needs to
+    if (stepper->getCurrentSpeedInMilliHz() / 1000 < homingSpeed * 1.3) {
+      // now that the speed is workable, we're going to perform a homing operation
+      // the homing toggle will ensure that we don't run multiple homing operations which ends up in PID esque feedback loop
+      // machineIsHomingToggle = true;
+
+      int currentPosition = getCurrentDegrees();
+
+      int nextValidStopPosition = keyPositions.needleDown;
+
+      if (currentPosition < keyPositions.needleDown || currentPosition > keyPositions.needleUp) {
+        nextValidStopPosition = keyPositions.needleDown;
+      } else {
+        nextValidStopPosition = keyPositions.needleUp;
       }
-      // good needle down routine
-       else {
-        int currentDegreePosition = getCurrentDegrees();
-        int currentStepperPosition = stepper->getCurrentPosition();
-        int stepperDestination = stepper->getPositionAfterCommandsCompleted();
 
-        int stepperDestinationDeltaDegrees = (stepperDestination - currentStepperPosition) / stepsPerDegree;
+      int offset = -10;
+      while(getCurrentDegrees() != nextValidStopPosition + offset && updatePedalReading() < pedalPinMin) {
+        // burn cycles until reached stop position
+        if (millis() % 3 == 0){
+          Serial.print("Homing burn down: ");
+          Serial.println(getCurrentDegrees());
+        }
+      }
 
-        // go to needle up
-        int degreesToAdd = 220 - currentDegreePosition - stepperDestinationDeltaDegrees;
-        int stepsToAdd = degreesToAdd * stepsPerDegree;
+      // if the pedal is still up, stop
+      if(updatePedalReading() < pedalPinMin && !thumbButtonHigh) {
+        stepper->forceStopAndNewPosition(0);
+        machineIsHomingToggle = true;
+      } else {
+        machineIsHomingToggle = false;
+      }
+      // // if (foundZero) {
+      // //   Serial.println("ForceStop at zero");
+      // //   // Serial.print("destination: ");
+      // //   // Serial.println(stepper->getPositionAfterCommandsCompleted());
+      // //   machineIsHomingToggle = true;
 
-        stepper->move(stepsToAdd, true);
-        stepper->forceStop();
-      } 
-    }
+      // //   stepper->forceStop();
+      // // } else {
+      //   int currentDegreePosition = getCurrentDegrees();
+      //   int currentStepperPosition = stepper->getCurrentPosition();
+      //   int stepperDestination = stepper->getPositionAfterCommandsCompleted();
 
+      //   // degreeAfterQueProcessed
+      //   //                                    steps                steps
+      //   int degreesInQueue = (stepperDestination - currentStepperPosition) / stepsPerDegree;
+      //   // absolute value of the end position
+      //   int stepperDestinationDegree = degreesInQueue + currentDegreePosition;
 
+      //   int degreesToAdd = 0;
+
+      //   if (stepperDestinationDegree > keyPositions.needleDown && stepperDestinationDegree < keyPositions.needleUp) {
+      //     // stop at needle up
+      //     Serial.println("Needle Up Branch");
+      //     degreesToAdd = keyPositions.needleUp - stepperDestinationDegree;
+      //   } else {
+      //     // stop at needle down
+      //     if (stepperDestinationDegree <= keyPositions.needleDown + 10) {
+      //       Serial.println("Needle down, destination between 0->NeedleDown");
+      //       degreesToAdd = keyPositions.needleDown - stepperDestinationDegree;
+      //     } else {
+      //       Serial.println("Needle down, destination between needleup and 359");
+      //       degreesToAdd = 360 - stepperDestinationDegree + keyPositions.needleDown;
+      //     }
+      //   }
+
+      //   // what happens to stepper->move() with input of 0?
+      //   // if (degreesToAdd < 0) {
+      //   //   degreesToAdd *= -1;
+      //   // }
+
+      //   if (degreesToAdd < 0) { 
+      //     Serial.print("\n+++++++++\nERROR: degreesToAdd negative: ");
+      //     Serial.print(degreesToAdd);
+      //     Serial.println("\n++++++\n");
+      //   }
+      //   int errorOffset = 13;
+        
+      //   if (degreesToAdd >= errorOffset) {
+      //     degreesToAdd -= errorOffset;
+      //   }
+
+      //   Serial.print("\ncurrentDegreePosition: ");
+      //   Serial.println(currentDegreePosition);
+      //   Serial.print("currentStepperPosition: ");
+      //   Serial.println(currentStepperPosition);
+      //   Serial.print("stepperDestination: ");
+      //   Serial.println(stepperDestination);
+
+      //   Serial.print("\ndegreesInQueue: ");
+      //   Serial.println(degreesInQueue);
+      //   Serial.print("stepperDestinationDegree: ");
+      //   Serial.println(stepperDestinationDegree);
+      //   Serial.print("\tdegreesToAdd: ");
+      //   Serial.println(degreesToAdd);
+
+      //   int stepsToAdd = degreesToAdd * stepsPerDegree;
+
+      //   if (stepsToAdd > 0) {
+      //     stepper->moveTo(currentStepperPosition + stepsToAdd);  
+      //   }
+
+      // stepper->setAcceleration(absAccelerationRate);
+      // stepper->applySpeedAcceleration();
+
+          // good needle down routine
+    } 
 
 
 
@@ -235,31 +370,58 @@ void loop() {
     // false rising edge accounts for ~15 degrees of this error
     // remainder probably momentum
     int degreesErrorCorrection = 0;
-    // while (getCurrentDegrees() != keyPositions.needleDown - degreesErrorCorrection && getCurrentDegrees() != keyPositions.needleUp - degreesErrorCorrection) {
-    //   Serial.println("stuck here?");
-    // }
  
 
-  } else if (pedalReading > pedalPinMin && !machineIsHoming) {
+  } else if (pedalReading > pedalPinMin && !machineIsHoming) { // normal sewing
     machineIsSewing = true;
     machineIsHomingToggle = false;
-    machineIsHoming = false;
+    // machineIsHoming = false;
 
-    // Serial.println("else branch");
+    Serial.println("\t==> else branch, run as normal");
+    stepper->setAcceleration(absAccelerationRate);
     stepper->setSpeedInHz(pedalSpeedInHz);
     // Serial.print("return value for runForward(): ");
     // Serial.println(s);
     stepper->runForward();
     // stepper->keepRunning();
-        Serial.print("destination: ");
-        Serial.println(stepper->getPositionAfterCommandsCompleted());
-        Serial.print("Current pos:");
-        Serial.println(stepper->getCurrentPosition());
+    // Serial.print("destination: ");
+    // Serial.println(stepper->getPositionAfterCommandsCompleted());
+    // Serial.print("Current pos:");
+    // Serial.println(stepper->getCurrentPosition());
+  } else {
+    if (machineIsSewing) {
+      Serial.println("Else branch");
+      
+      Serial.print("machineIsSewing : ");
+      Serial.println(machineIsSewing);
+
+      Serial.print("machineIsHoming : ");
+      Serial.println(machineIsHoming);
+
+      Serial.print("machineIsHomingToggle :");
+      Serial.println(machineIsHomingToggle);
+
+      Serial.print("thumbButton :");
+      Serial.println(thumbButton.getButtonState());
+    }
+
+    // delay(300);
+
+
+    // if (!machineIsSewing) {
+    //   stepper->forceStop();
+    //   Serial.println("fall through !machine is sewing error");
+      
+    // }
+    
   }
 
   foundZero = false;
   delayMicroseconds(100);
+  
 }
+
+int lastDegreesTravelled = 0;
 
 int degreesTravelled() {
   if (pulsesTravelled == 0) {
@@ -328,18 +490,6 @@ int updatePedalReading() {
 
   float avg = float(samplesTotal) / numSamples;
 
-  // Serial.print("SampledAvg:");
-  // Serial.print(avg);
-  // Serial.print(",");
-  // if (avg > pedalReadMax) {
-  //   pedalReadMax = avg;
-  // }
-
-  // Serial.print("Max:");
-  // Serial.println(pedalReadMax);
-
-  // -2 offset is to catch false positives
-  // TODO globalize
   return avg;
 }
 
@@ -353,7 +503,6 @@ void needleDownInterrupt() {
   // debounce false positive from needle down detector
   // didn't work still getting error
   if (myEnc.read() > 500) {
-    // Serial.println("single zero");
     millisLastZero = millis();
     long encoderReading = myEnc.readAndReset();
 
