@@ -38,12 +38,12 @@ unsigned int pedalPinMin = 20;
 // ==========================
 
 unsigned int minSpeedInHz = 5000; // 1700 good
-unsigned int maxSpeedInHz = 40000; // bog at 45k
+unsigned int maxSpeedInHz = 35000; // loss of steps at 37000
 unsigned int homingSpeed = 7000;
 
 // not accessible in setup?
 unsigned int absAccelerationRate = 30000;
-unsigned int linAccelRate = 200;
+unsigned int linAccelRate = 150;
 
 // key points in the stitch cycles
 struct MachinePositions {
@@ -156,7 +156,7 @@ void setup() {
   lastZero = !digitalRead(needleDownSensorPin);
 
   millisLastZero = millis();
-  stepper->setForwardPlanningTimeInMs(16);
+  stepper->setForwardPlanningTimeInMs(20);
 }
 
 // ==========================================           
@@ -184,8 +184,10 @@ void loop() {
   bool thumbButtonFalling = thumbButton.onReleased();
   
   int pedalReading = updatePedalReading();
+  // Serial.println(pedalReading);
   bool pedalUp = pedalReading < pedalPinMin - 5;
   unsigned int pedalSpeedInHz = findPedalSpeedInHz(pedalUp, pedalReading);
+  // Serial.println(pedalSpeedInHz);
 
   machineIsHoming = (machineIsSewing && debounceHoming(pedalUp) && !thumbButtonHigh) && (degreesTravelled() > 40);
 
@@ -193,6 +195,7 @@ void loop() {
   //      Main control loop
   // ==========================
   if (thumbButtonHigh && !stepper->isRunning()) { // Thumb button pressed
+    Serial.println("Thumb loop");
     machineIsSewing = true;
     machineIsHoming = true;
 
@@ -204,7 +207,7 @@ void loop() {
     stepper->runForward();
 
   } else if (!stepper->isRunning() && pedalUp && !thumbButtonHigh && machineIsSewing) { // End of sewing
-    // Serial.println("End of sewing branch");
+    Serial.println("End of sewing branch");
     machineIsSewing = false;
     machineIsHoming = false;
     machineIsHomingToggle = false;
@@ -216,7 +219,7 @@ void loop() {
   } else if (machineIsHoming && !machineIsHomingToggle) { // Homing
     // Serial.println("\n\n=======================================\n");
 
-    // Serial.println("Homing branch");
+    Serial.println("Homing branch");
     stepper->setAcceleration(100000);
     stepper->setLinearAcceleration(80);
     stepper->setSpeedInHz(homingSpeed);
@@ -241,10 +244,10 @@ void loop() {
       int offset = -10;
       while(getCurrentDegrees() != nextValidStopPosition + offset && updatePedalReading() < pedalPinMin) {
         // burn cycles until reached stop position
-        if (millis() % 3 == 0){
-          Serial.print("Homing burn down: ");
-          Serial.println(getCurrentDegrees());
-        }
+        // if (millis() % 3 == 0){
+        //   Serial.print("Homing burn down: ");
+        //   Serial.println(getCurrentDegrees());
+        // }
       }
 
       // if the user hasn't pressed pedal or button, stop
@@ -256,16 +259,18 @@ void loop() {
         machineIsHomingToggle = false;
       }
 
-    } else if (pedalReading > pedalPinMin && !machineIsHoming) { // normal sewing
+      foundZero = false;
+      delayMicroseconds(100);
+    }
+
+  } else if (pedalReading > pedalPinMin && !machineIsHoming) { // normal sewing
+      Serial.println("Normal sewing");
       machineIsSewing = true;
       machineIsHomingToggle = false;
 
       stepper->setAcceleration(absAccelerationRate);
       stepper->setSpeedInHz(pedalSpeedInHz);
       stepper->runForward();
-    }
-    foundZero = false;
-    delayMicroseconds(100);
   }
 }
 
